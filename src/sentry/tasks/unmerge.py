@@ -2,6 +2,8 @@ from __future__ import absolute_import
 
 import logging
 
+from django.db.models import F
+
 from sentry.app import tsdb
 from sentry.constants import DEFAULT_LOGGER_NAME, LOG_LEVELS_MAP
 from sentry.event_manager import ScoreClause, generate_culprit, get_hashes_for_event, md5_from_hash
@@ -190,9 +192,67 @@ def truncate_denormalizations(group_id):
     ], [group_id])
 
 
+def collect_tag_data(events):
+    results = {}
+
+    for event in events:
+        tags = results.setdefault((event.project_id, event.group_id), {})
+
+        for key, value in event.get_tags():
+            values = tags.setdefault(key, {})
+
+            if value in values:
+                times_seen, first_seen, last_seen = values[value]
+                values[value] = (times_seen + 1, event.datetime, last_seen)
+            else:
+                values[value] = (0, event.datetime, event.datetime)
+
+    return results
+
+
+def repair_tag_data(events):
+    # Repair `GroupTag{Key,Value}` data.
+    for (project_id, group_id), keys in collect_tag_data(events).items():
+        for key, values in keys.items():
+            GroupTagKey.objects.get_or_create(
+                project_id=project_id,
+                group_id=group_id,
+                key=key,
+            )
+
+            for value, (times_seen, first_seen, last_seen) in values.items():
+                instance, created = GroupTagValue.objects.get_or_create(
+                    project_id=project_id,
+                    group=group_id,
+                    key=key,
+                    value=value,
+                    defaults={
+                        'first_seen': first_seen,
+                        'last_seen': last_seen,
+                        'times_seen': times_seen,
+                    },
+                )
+
+                if not created:
+                    instance.update(
+                        first_seen=first_seen,
+                        times_seen=F('times_seen') + times_seen,
+                    )
+
+
+def collect_release_data(events):
+    raise NotImplementedError
+
+
+def collect_tsdb_data(events):
+    raise NotImplementedError
+
+
 def repair_denormalizations(events):
-    # TODO: Repair `GroupTag{Key,Value}` data. (Also test `EventTag` at this point.)
+    repair_tag_data(events)
+
     # TODO: Repair `GroupRelease` data.
+
     # TODO: Repair TSDB data.
     raise NotImplementedError
 
