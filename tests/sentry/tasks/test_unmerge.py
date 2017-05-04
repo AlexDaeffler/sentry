@@ -209,6 +209,7 @@ class UnmergeTestCase(TestCase):
 
         destination = Group.objects.get(
             id=unmerge(
+                source.project_id,
                 source.id,
                 None,
                 [events.keys()[1]],

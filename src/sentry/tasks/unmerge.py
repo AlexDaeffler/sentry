@@ -7,7 +7,7 @@ from django.db.models import F
 from sentry.app import tsdb
 from sentry.constants import DEFAULT_LOGGER_NAME, LOG_LEVELS_MAP
 from sentry.event_manager import ScoreClause, generate_culprit, get_hashes_for_event, md5_from_hash
-from sentry.models import Event, EventMapping, EventTag, Group, GroupHash, GroupRelease, GroupTagKey, GroupTagValue, Release, UserReport
+from sentry.models import Event, EventMapping, EventTag, Group, GroupHash, GroupRelease, GroupTagKey, GroupTagValue, Project, Release, UserReport
 
 
 def merge_mappings(values):
@@ -87,7 +87,7 @@ def get_fingerprint(event):
     return md5_from_hash(primary_hash)
 
 
-def migrate_events(source_id, destination_id, fingerprints, events):
+def migrate_events(project, source_id, destination_id, fingerprints, events):
     # XXX: This is only actually able to create a destination group and migrate
     # the group hashes if there are events that can be migrated. How do we
     # handle this if there aren't any events? We can't create a group (there
@@ -95,10 +95,6 @@ def migrate_events(source_id, destination_id, fingerprints, events):
     # hash as in limbo somehow...?)
     if not events:
         return destination_id
-
-    # TODO: What happens if this ``Group`` record has been deleted?
-    source = Group.objects.get(id=source_id)
-    project = source.project
 
     if destination_id is None:
         # XXX: There is a race condition here between the (wall clock) time
@@ -196,7 +192,7 @@ def collect_tag_data(events):
     results = {}
 
     for event in events:
-        tags = results.setdefault((event.project_id, event.group_id), {})
+        tags = results.setdefault(event.group_id, {})
 
         for key, value in event.get_tags():
             values = tags.setdefault(key, {})
@@ -210,19 +206,19 @@ def collect_tag_data(events):
     return results
 
 
-def repair_tag_data(events):
+def repair_tag_data(project, events):
     # Repair `GroupTag{Key,Value}` data.
-    for (project_id, group_id), keys in collect_tag_data(events).items():
+    for group_id, keys in collect_tag_data(events).items():
         for key, values in keys.items():
             GroupTagKey.objects.get_or_create(
-                project_id=project_id,
+                project_id=project.id,
                 group_id=group_id,
                 key=key,
             )
 
             for value, (times_seen, first_seen, last_seen) in values.items():
                 instance, created = GroupTagValue.objects.get_or_create(
-                    project_id=project_id,
+                    project_id=project.id,
                     group=group_id,
                     key=key,
                     value=value,
@@ -240,29 +236,76 @@ def repair_tag_data(events):
                     )
 
 
-def collect_release_data(events):
-    raise NotImplementedError
+def collect_release_data(project, events):
+    results = {}
+
+    for event in events:
+        release = event.get_tag('sentry:release')
+
+        # TODO: Double check this!
+        if not release:
+            continue
+
+        # XXX: It's not really clear what the canonical source is for
+        # environment between the tag and the data attribute, but I'm going
+        # with data attribute for now. Right now it seems like they are
+        # intended to both be present and the same value, but I'm not really
+        # sure that has always been the case for existing values.
+        # NOTE: ``GroupRelease.environment`` is not nullable, but an empty
+        # string is OK.
+        environment = event.data.get('environment', '')
+
+        key = (
+            event.group_id,
+            environment,
+            Release.objects.get(  # XXX: This lookup should be cached.
+                organization_id=project.organization_id,  # XXX: This is inefficient.
+                version=release,
+            ).id,
+        )
+
+        if key in results:
+            first_seen, last_seen = results[key]
+            results[key] = (event.datetime, last_seen)
+        else:
+            results[key] = (event.datetime, event.datetime)
+
+    return results
 
 
-def repair_group_release_data(events):
-    raise NotImplementedError
+def repair_group_release_data(project, events):
+    attributes = collect_release_data(project, events).items()
+    for (group_id, environment, release_id), (first_seen, last_seen) in attributes:
+        instance, created = GroupRelease.objects.get_or_create(
+            project_id=project.id,
+            group_id=group_id,
+            environment=environment,
+            release_id=release_id,
+            defaults={
+                'first_seen': first_seen,
+                'last_seen': last_seen,
+            },
+        )
+
+        if not created:
+            instance.update(first_seen=first_seen)
 
 
 def collect_tsdb_data(events):
     raise NotImplementedError
 
 
-def repair_tsdb_data(events):
+def repair_tsdb_data(project, events):
     raise NotImplementedError
 
 
-def repair_denormalizations(events):
-    repair_tag_data(events)
-    repair_group_release_data(events)
-    repair_tsdb_data(events)
+def repair_denormalizations(project, events):
+    repair_tag_data(project, events)
+    repair_group_release_data(project, events)
+    repair_tsdb_data(project, events)
 
 
-def unmerge(source_id, destination_id, fingerprints, cursor=None, batch_size=500):
+def unmerge(project_id, source_id, destination_id, fingerprints, cursor=None, batch_size=500):
     # XXX: If a ``GroupHash`` is unmerged *again* while this operation is
     # already in progress, some events from the fingerprint associated with the
     # hash may not be migrated to the new destination! We could solve this with
@@ -292,7 +335,11 @@ def unmerge(source_id, destination_id, fingerprints, cursor=None, batch_size=500
 
     Event.objects.bind_nodes(events, 'data')
 
+    # TODO: Pretty much assert everywhere that the project is set correctly.
+    project = Project.objects.get(id=project_id)
+
     destination_id = migrate_events(
+        project,
         source_id,
         destination_id,
         fingerprints,
@@ -302,9 +349,13 @@ def unmerge(source_id, destination_id, fingerprints, cursor=None, batch_size=500
         )
     )
 
-    repair_denormalizations(events)
+    repair_denormalizations(
+        project,
+        events,
+    )
 
     return unmerge(
+        project_id,
         source_id,
         destination_id,
         fingerprints,
