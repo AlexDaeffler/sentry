@@ -87,7 +87,7 @@ def get_fingerprint(event):
     return md5_from_hash(primary_hash)
 
 
-def migrate_events(project, source_id, destination_id, fingerprints, events):
+def migrate_events(project, destination_id, fingerprints, events):
     # XXX: This is only actually able to create a destination group and migrate
     # the group hashes if there are events that can be migrated. How do we
     # handle this if there aren't any events? We can't create a group (there
@@ -340,7 +340,6 @@ def unmerge(project_id, source_id, destination_id, fingerprints, cursor=None, ba
 
     destination_id = migrate_events(
         project,
-        source_id,
         destination_id,
         fingerprints,
         filter(
