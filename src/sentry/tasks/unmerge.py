@@ -205,7 +205,7 @@ def collect_tag_data(events):
                 times_seen, first_seen, last_seen = values[value]
                 values[value] = (times_seen + 1, event.datetime, last_seen)
             else:
-                values[value] = (0, event.datetime, event.datetime)
+                values[value] = (1, event.datetime, event.datetime)
 
     return results
 
@@ -244,17 +244,22 @@ def collect_release_data(events):
     raise NotImplementedError
 
 
+def repair_group_release_data(events):
+    raise NotImplementedError
+
+
 def collect_tsdb_data(events):
+    raise NotImplementedError
+
+
+def repair_tsdb_data(events):
     raise NotImplementedError
 
 
 def repair_denormalizations(events):
     repair_tag_data(events)
-
-    # TODO: Repair `GroupRelease` data.
-
-    # TODO: Repair TSDB data.
-    raise NotImplementedError
+    repair_group_release_data(events)
+    repair_tsdb_data(events)
 
 
 def unmerge(source_id, destination_id, fingerprints, cursor=None, batch_size=500):
