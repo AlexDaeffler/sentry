@@ -1,13 +1,14 @@
 from __future__ import absolute_import
 
 import logging
+from collections import defaultdict
 
 from django.db.models import F
 
 from sentry.app import tsdb
 from sentry.constants import DEFAULT_LOGGER_NAME, LOG_LEVELS_MAP
 from sentry.event_manager import ScoreClause, generate_culprit, get_hashes_for_event, md5_from_hash
-from sentry.models import Event, EventMapping, EventTag, Group, GroupHash, GroupRelease, GroupTagKey, GroupTagValue, Project, Release, UserReport
+from sentry.models import Environment, Event, EventMapping, EventTag, EventUser, Group, GroupHash, GroupRelease, GroupTagKey, GroupTagValue, Project, Release, UserReport
 
 
 def merge_mappings(values):
@@ -259,7 +260,7 @@ def collect_release_data(project, events):
             event.group_id,
             environment,
             Release.objects.get(  # XXX: This lookup should be cached.
-                organization_id=project.organization_id,  # XXX: This is inefficient.
+                organization_id=project.organization_id,
                 version=release,
             ).id,
         )
@@ -291,12 +292,90 @@ def repair_group_release_data(project, events):
             instance.update(first_seen=first_seen)
 
 
-def collect_tsdb_data(events):
-    raise NotImplementedError
+def collect_tsdb_data(project, events):
+    counters = defaultdict(
+        lambda: defaultdict(
+            lambda: defaultdict(int),
+        ),
+    )
+
+    sets = defaultdict(
+        lambda: defaultdict(
+            lambda: defaultdict(int),
+        ),
+    )
+
+    frequencies = defaultdict(
+        lambda: defaultdict(
+            lambda: defaultdict(
+                lambda: defaultdict(
+                    int,
+                ),
+            ),
+        ),
+    )
+
+    for event in events:
+        counters[event.datetime][tsdb.models.group][event.group_id] += 1
+
+        user = event.data.get('sentry.interfaces.User')
+        if user:
+            sets[event.datetime][tsdb.models.users_affected_by_group][event.group_id].add(
+                EventUser(
+                    project=project,
+                    ident=user.get('id'),
+                    email=user.get('email'),
+                    username=user.get('username'),
+                    ip_address=user.get('ip_address'),
+                ).tag_value
+            )
+
+        environment = Environment.objects.get(
+            projects=project,
+            name=event.data.get('environment', ''),
+        )
+
+        frequencies[event.datetime][tsdb.models.frequent_environments_by_group][event.group_id][environment.id] += 1
+
+        # TODO: Double check this!
+        release = event.get_tag('sentry:release')
+        if release:
+            # TODO: I'm also not sure if this is correct, see similar comment
+            # above during creation.
+            environment = event.data.get('environment', '')
+
+            # XXX: This is also inefficient, especially since we have created
+            # or updated the record already in this process.
+            grouprelease = GroupRelease.objects.get(
+                group_id=event.group_id,
+                environment=environment,
+                release=Release.objects.get(
+                    organization_id=project.organization_id,
+                    version=release,
+                ),
+            )
+
+            frequencies[event.datetime][tsdb.models.frequent_environments_by_group][event.group_id][grouprelease.id] += 1
+
+    return counters, sets, frequencies
 
 
 def repair_tsdb_data(project, events):
-    raise NotImplementedError
+    counters, sets, frequencies = collect_tsdb_data(project, events)
+
+    for timestamp, data in counters.items():
+        for model, keys in data.items():
+            for key, value in keys.items():
+                tsdb.incr(model, key, timestamp, value)
+
+    for timestamp, data in sets.items():
+        for model, keys in data.items():
+            for key, values in keys.items():
+                # TODO: This should use `record_multi` rather than `record`.
+                tsdb.record(model, key, values, timestamp)
+
+    for timestamp, data in frequencies.items():
+        tsdb.record_frequency_multi(data.items(), timestamp)
 
 
 def repair_denormalizations(project, events):

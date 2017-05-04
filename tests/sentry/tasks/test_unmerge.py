@@ -9,7 +9,7 @@ import pytz
 from collections import OrderedDict
 
 from sentry.event_manager import ScoreClause
-from sentry.models import Event, EventMapping, Group, GroupHash, UserReport
+from sentry.models import Environment, EnvironmentProject, Event, EventMapping, Group, GroupHash, UserReport
 from sentry.testutils import TestCase
 from sentry.tasks.unmerge import get_fingerprint, unmerge, get_group_creation_attributes, get_group_backfill_attributes
 from sentry.utils.dates import to_timestamp
@@ -142,6 +142,14 @@ class UnmergeTestCase(TestCase):
         source = self.create_group(project)
 
         sequence = itertools.count(0)
+
+        EnvironmentProject.objects.create(
+            environment=Environment.objects.create(
+                organization_id=project.organization_id,
+                name='',
+            ),
+            project=project,
+        )
 
         def create_message_event(template, parameters):
             event_id = uuid.UUID(
