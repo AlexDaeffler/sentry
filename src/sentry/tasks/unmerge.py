@@ -384,6 +384,18 @@ def repair_denormalizations(project, events):
     repair_tsdb_data(project, events)
 
 
+def update_tag_value_counts(id_list):
+    instances = GroupTagKey.objects.filter(group_id__in=id_list)
+    for instance in instances:
+        instance.update(
+            values_seen=GroupTagValue.objects.filter(
+                project_id=instance.project_id,
+                group_id=instance.group_id,
+                key=instance.key,
+            ).count(),
+        )
+
+
 def unmerge(project_id, source_id, destination_id, fingerprints, cursor=None, batch_size=500):
     # XXX: If a ``GroupHash`` is unmerged *again* while this operation is
     # already in progress, some events from the fingerprint associated with the
@@ -410,6 +422,7 @@ def unmerge(project_id, source_id, destination_id, fingerprints, cursor=None, ba
 
     # If there are no more events to process, we're done with the migration.
     if not events:
+        update_tag_value_counts([source_id, destination_id])
         return destination_id
 
     Event.objects.bind_nodes(events, 'data')
