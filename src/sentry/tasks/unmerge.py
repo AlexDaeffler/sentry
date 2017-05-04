@@ -2,9 +2,10 @@ from __future__ import absolute_import
 
 import logging
 
+from sentry.app import tsdb
 from sentry.constants import DEFAULT_LOGGER_NAME, LOG_LEVELS_MAP
 from sentry.event_manager import ScoreClause, generate_culprit, get_hashes_for_event, md5_from_hash
-from sentry.models import Event, EventMapping, EventTag, Group, GroupHash, Release, UserReport
+from sentry.models import Event, EventMapping, EventTag, Group, GroupHash, GroupRelease, GroupTagKey, GroupTagValue, Release, UserReport
 
 
 def merge_mappings(values):
@@ -115,6 +116,8 @@ def migrate_events(source_id, destination_id, fingerprints, events):
             **get_group_creation_attributes(events)
         )
 
+        destination_id = destination.id
+
         # Move the group hashes to the destination.
         # TODO: What happens if this ``GroupHash`` has already been
         # migrated somewhere else? Right now, this just assumes we have
@@ -161,10 +164,30 @@ def migrate_events(source_id, destination_id, fingerprints, events):
 
 
 def truncate_denormalizations(group_id):
-    # TODO: Delete `GroupTag{Key,Value}` data.
-    # TODO: Delete `GroupRelease` data. (XXX: Is this safe???)
-    # TODO: Delete TSDB data.
-    raise NotImplementedError
+    GroupTagKey.objects.filter(
+        group_id=group_id,
+    ).delete()
+
+    GroupTagValue.objects.filter(
+        group_id=group_id,
+    ).delete()
+
+    GroupRelease.objects.filter(
+        group_id=group_id,
+    ).delete()
+
+    tsdb.delete([
+        tsdb.models.group,
+    ], [group_id])
+
+    tsdb.delete_distinct_counts([
+        tsdb.models.users_affected_by_group,
+    ], [group_id])
+
+    tsdb.delete_frequencies([
+        tsdb.models.frequent_releases_by_group,
+        tsdb.models.frequent_environments_by_group,
+    ], [group_id])
 
 
 def repair_denormalizations(events):
