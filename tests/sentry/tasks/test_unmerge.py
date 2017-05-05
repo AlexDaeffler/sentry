@@ -139,6 +139,8 @@ class UnmergeTestCase(TestCase):
         }
 
     def test_unmerge(self):
+        now = datetime(2017, 5, 3, 6, 6, 6, tzinfo=pytz.utc)
+
         project = self.create_project()
         source = self.create_group(project)
 
@@ -154,9 +156,11 @@ class UnmergeTestCase(TestCase):
         )
 
         def create_message_event(template, parameters):
+            i = next(sequence)
+
             event_id = uuid.UUID(
                 fields=(
-                    next(sequence),
+                    i,
                     0x0,
                     0x1000,
                     0x80,
@@ -170,6 +174,7 @@ class UnmergeTestCase(TestCase):
                 group_id=source.id,
                 event_id=event_id,
                 message='%s' % (id,),
+                datetime=now + timedelta(minutes=1 << i),
                 data={
                     'environment': 'production',
                     'type': 'default',
@@ -291,9 +296,13 @@ class UnmergeTestCase(TestCase):
         assert set(
             GroupRelease.objects.filter(
                 group_id=source.id,
-            ).values_list('environment', flat=True)
+            ).values_list('environment', 'first_seen', 'last_seen')
         ) == set([
-            u'production',
+            (
+                u'production',
+                now + timedelta(minutes=1 << 0),
+                now + timedelta(minutes=1 << 9),
+            ),
         ])
 
         # TODO: Check first, last seen.
@@ -303,12 +312,46 @@ class UnmergeTestCase(TestCase):
             (u'sentry:release', 1),
         ])
 
-        assert set(GroupTagValue.objects.filter(group=source).values_list('key', 'value', 'times_seen')) == set([
-            (u'color', u'red', 4),
-            (u'color', u'green', 3),
-            (u'color', u'blue', 3),
-            (u'environment', u'production', 10),
-            (u'sentry:release', u'version', 10),
+        assert set(
+            GroupTagValue.objects.filter(
+                group=source,
+            ).values_list('key', 'value', 'times_seen', 'first_seen', 'last_seen')
+        ) == set([
+            (
+                u'color',
+                u'red',
+                4,
+                now + timedelta(minutes=1 << 0),
+                now + timedelta(minutes=1 << 9),
+            ),
+            (
+                u'color',
+                u'green',
+                3,
+                now + timedelta(minutes=1 << 1),
+                now + timedelta(minutes=1 << 7),
+            ),
+            (
+                u'color',
+                u'blue',
+                3,
+                now + timedelta(minutes=1 << 2),
+                now + timedelta(minutes=1 << 8),
+            ),
+            (
+                u'environment',
+                u'production',
+                10,
+                now + timedelta(minutes=1 << 0),
+                now + timedelta(minutes=1 << 9),
+            ),
+            (
+                u'sentry:release',
+                u'version',
+                10,
+                now + timedelta(minutes=1 << 0),
+                now + timedelta(minutes=1 << 9),
+            ),
         ])
 
         destination_event_event_ids = map(
@@ -341,9 +384,13 @@ class UnmergeTestCase(TestCase):
         assert set(
             GroupRelease.objects.filter(
                 group_id=destination.id,
-            ).values_list('environment', flat=True)
+            ).values_list('environment', 'first_seen', 'last_seen')
         ) == set([
-            u'production',
+            (
+                u'production',
+                now + timedelta(minutes=1 << 10),
+                now + timedelta(minutes=1 << 16),
+            ),
         ])
 
         # TODO: Check first, last seen.
@@ -353,10 +400,44 @@ class UnmergeTestCase(TestCase):
             (u'sentry:release', 1),
         ])
 
-        assert set(GroupTagValue.objects.filter(group=destination).values_list('key', 'value', 'times_seen')) == set([
-            (u'color', u'red', 2),
-            (u'color', u'green', 3),
-            (u'color', u'blue', 2),
-            (u'environment', u'production', 7),
-            (u'sentry:release', u'version', 7),
+        assert set(
+            GroupTagValue.objects.filter(
+                group=destination,
+            ).values_list('key', 'value', 'times_seen', 'first_seen', 'last_seen')
+        ) == set([
+            (
+                u'color',
+                u'red',
+                2,
+                now + timedelta(minutes=1 << 12),
+                now + timedelta(minutes=1 << 15),
+            ),
+            (
+                u'color',
+                u'green',
+                3,
+                now + timedelta(minutes=1 << 10),
+                now + timedelta(minutes=1 << 16),
+            ),
+            (
+                u'color',
+                u'blue',
+                2,
+                now + timedelta(minutes=1 << 11),
+                now + timedelta(minutes=1 << 14),
+            ),
+            (
+                u'environment',
+                u'production',
+                7,
+                now + timedelta(minutes=1 << 10),
+                now + timedelta(minutes=1 << 16),
+            ),
+            (
+                u'sentry:release',
+                u'version',
+                7,
+                now + timedelta(minutes=1 << 10),
+                now + timedelta(minutes=1 << 16),
+            ),
         ])
