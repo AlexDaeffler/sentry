@@ -9,7 +9,7 @@ import pytz
 from collections import OrderedDict
 
 from sentry.event_manager import ScoreClause
-from sentry.models import Environment, EnvironmentProject, Event, EventMapping, Group, GroupHash, UserReport
+from sentry.models import Environment, EnvironmentProject, Event, EventMapping, Group, GroupHash, GroupTagKey, GroupTagValue, UserReport
 from sentry.testutils import TestCase
 from sentry.tasks.unmerge import get_fingerprint, unmerge, get_group_creation_attributes, get_group_backfill_attributes
 from sentry.utils.dates import to_timestamp
@@ -59,6 +59,7 @@ class UnmergeTestCase(TestCase):
                 },
             ),
         ]
+
         assert get_group_creation_attributes(events) == {
             'active_at': now - timedelta(hours=2),
             'first_seen': now - timedelta(hours=2),
@@ -142,6 +143,7 @@ class UnmergeTestCase(TestCase):
         source = self.create_group(project)
 
         sequence = itertools.count(0)
+        tag_values = itertools.cycle(['red', 'green', 'blue'])
 
         EnvironmentProject.objects.create(
             environment=Environment.objects.create(
@@ -162,6 +164,7 @@ class UnmergeTestCase(TestCase):
                     0x808080808080,
                 ),
             ).hex
+
             event = Event.objects.create(
                 project_id=project.id,
                 group_id=source.id,
@@ -177,14 +180,25 @@ class UnmergeTestCase(TestCase):
                         'params': parameters,
                         'formatted': template % parameters,
                     },
+                    'tags': [
+                        ['color', next(tag_values)],
+                    ],
                 },
             )
+
+            with self.tasks():
+                Group.objects.add_tags(
+                    source,
+                    tags=event.get_tags(),
+                )
+
             EventMapping.objects.create(
                 project_id=project.id,
                 group_id=source.id,
                 event_id=event_id,
                 date_added=event.datetime,
             )
+
             UserReport.objects.create(
                 project_id=project.id,
                 group_id=source.id,
@@ -193,6 +207,7 @@ class UnmergeTestCase(TestCase):
                 email='ceo@corptron.com',
                 comments='Quack',
             )
+
             return event
 
         events = OrderedDict()
@@ -214,6 +229,17 @@ class UnmergeTestCase(TestCase):
                 group=source,
                 hash=fingerprint,
             )
+
+        # TODO: Check first, last seen.
+        assert set(GroupTagKey.objects.filter(group=source).values_list('key', 'values_seen')) == set([
+            (u'color', 3),
+        ])
+
+        assert set(GroupTagValue.objects.filter(group=source).values_list('key', 'value', 'times_seen')) == set([
+            (u'color', u'red', 6),
+            (u'color', u'green', 6),
+            (u'color', u'blue', 5),
+        ])
 
         destination = Group.objects.get(
             id=unmerge(
@@ -252,6 +278,17 @@ class UnmergeTestCase(TestCase):
             events.keys()[0]
         ])
 
+        # TODO: Check first, last seen.
+        assert set(GroupTagKey.objects.filter(group=source).values_list('key', 'values_seen')) == set([
+            (u'color', 3),
+        ])
+
+        assert set(GroupTagValue.objects.filter(group=source).values_list('key', 'value', 'times_seen')) == set([
+            (u'color', u'red', 4),
+            (u'color', u'green', 3),
+            (u'color', u'blue', 3),
+        ])
+
         destination_event_event_ids = map(
             lambda event: event.event_id,
             events.values()[1],
@@ -274,4 +311,15 @@ class UnmergeTestCase(TestCase):
             ).values_list('hash', flat=True)
         ) == set([
             events.keys()[1]
+        ])
+
+        # TODO: Check first, last seen.
+        assert set(GroupTagKey.objects.filter(group=destination).values_list('key', 'values_seen')) == set([
+            (u'color', 3),
+        ])
+
+        assert set(GroupTagValue.objects.filter(group=destination).values_list('key', 'value', 'times_seen')) == set([
+            (u'color', u'red', 2),
+            (u'color', u'green', 3),
+            (u'color', u'blue', 2),
         ])

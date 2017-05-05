@@ -217,10 +217,13 @@ def repair_tag_data(project, events):
                 key=key,
             )
 
+            # XXX: `{first,last}_seen` columns don't totally replicate the
+            # ingestion logic (but actually represent a more accurate value.)
+            # See GH-5289 for more details.
             for value, (times_seen, first_seen, last_seen) in values.items():
                 instance, created = GroupTagValue.objects.get_or_create(
                     project_id=project.id,
-                    group=group_id,
+                    group_id=group_id,
                     key=key,
                     value=value,
                     defaults={
@@ -409,12 +412,25 @@ def unmerge(project_id, source_id, destination_id, fingerprints, cursor=None, ba
     # be run without iteration by passing around a state object and we could
     # just use that here instead.
 
+    # On the first iteration of this loop, we clear out all of the
+    # denormalizations from the source group so that we can have a clean slate
+    # for the new, repaired data.
     if cursor is None:
         truncate_denormalizations(source_id)
 
+    project = Project.objects.get(id=project_id)
+
+    # TODO: It might make sense to fetch the source group to assert that it is
+    # contained within the project, even though we don't actually directy use
+    # it anywhere.
+
     # We fetch the events in descending order by their primary key to get the
     # best approximation of the most recently received events.
-    queryset = Event.objects.filter(group_id=source_id).order_by('-id')
+    queryset = Event.objects.filter(
+        project_id=project_id,
+        group_id=source_id,
+    ).order_by('-id')
+
     if cursor is not None:
         queryset = queryset.filter(id__lt=cursor)
 
@@ -426,9 +442,6 @@ def unmerge(project_id, source_id, destination_id, fingerprints, cursor=None, ba
         return destination_id
 
     Event.objects.bind_nodes(events, 'data')
-
-    # TODO: Pretty much assert everywhere that the project is set correctly.
-    project = Project.objects.get(id=project_id)
 
     destination_id = migrate_events(
         project,
