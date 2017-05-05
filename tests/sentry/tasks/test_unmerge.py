@@ -9,7 +9,7 @@ import pytz
 from collections import OrderedDict
 
 from sentry.event_manager import ScoreClause
-from sentry.models import Environment, EnvironmentProject, Event, EventMapping, Group, GroupHash, GroupTagKey, GroupTagValue, UserReport
+from sentry.models import Environment, EnvironmentProject, Event, EventMapping, Group, GroupHash, GroupRelease, GroupTagKey, GroupTagValue, UserReport
 from sentry.testutils import TestCase
 from sentry.tasks.unmerge import get_fingerprint, unmerge, get_group_creation_attributes, get_group_backfill_attributes
 from sentry.utils.dates import to_timestamp
@@ -148,7 +148,7 @@ class UnmergeTestCase(TestCase):
         EnvironmentProject.objects.create(
             environment=Environment.objects.create(
                 organization_id=project.organization_id,
-                name='',
+                name='production',
             ),
             project=project,
         )
@@ -171,6 +171,7 @@ class UnmergeTestCase(TestCase):
                 event_id=event_id,
                 message='%s' % (id,),
                 data={
+                    'environment': 'production',
                     'type': 'default',
                     'metadata': {
                         'title': template % parameters,
@@ -182,6 +183,8 @@ class UnmergeTestCase(TestCase):
                     },
                     'tags': [
                         ['color', next(tag_values)],
+                        ['environment', 'production'],
+                        ['sentry:release', 'version'],
                     ],
                 },
             )
@@ -233,12 +236,16 @@ class UnmergeTestCase(TestCase):
         # TODO: Check first, last seen.
         assert set(GroupTagKey.objects.filter(group=source).values_list('key', 'values_seen')) == set([
             (u'color', 3),
+            (u'environment', 1),
+            (u'sentry:release', 1),
         ])
 
         assert set(GroupTagValue.objects.filter(group=source).values_list('key', 'value', 'times_seen')) == set([
             (u'color', u'red', 6),
             (u'color', u'green', 6),
             (u'color', u'blue', 5),
+            (u'environment', u'production', 17),
+            (u'sentry:release', u'version', 17),
         ])
 
         destination = Group.objects.get(
@@ -260,16 +267,19 @@ class UnmergeTestCase(TestCase):
         )
 
         assert source.event_set.count() == 10
+
         assert set(
             EventMapping.objects.filter(
                 group_id=source.id,
             ).values_list('event_id', flat=True)
         ) == set(source_event_event_ids)
+
         assert set(
             UserReport.objects.filter(
                 group_id=source.id,
             ).values_list('event_id', flat=True)
         ) == set(source_event_event_ids)
+
         assert set(
             GroupHash.objects.filter(
                 group_id=source.id,
@@ -278,15 +288,27 @@ class UnmergeTestCase(TestCase):
             events.keys()[0]
         ])
 
+        assert set(
+            GroupRelease.objects.filter(
+                group_id=source.id,
+            ).values_list('environment', flat=True)
+        ) == set([
+            u'production',
+        ])
+
         # TODO: Check first, last seen.
         assert set(GroupTagKey.objects.filter(group=source).values_list('key', 'values_seen')) == set([
             (u'color', 3),
+            (u'environment', 1),
+            (u'sentry:release', 1),
         ])
 
         assert set(GroupTagValue.objects.filter(group=source).values_list('key', 'value', 'times_seen')) == set([
             (u'color', u'red', 4),
             (u'color', u'green', 3),
             (u'color', u'blue', 3),
+            (u'environment', u'production', 10),
+            (u'sentry:release', u'version', 10),
         ])
 
         destination_event_event_ids = map(
@@ -295,16 +317,19 @@ class UnmergeTestCase(TestCase):
         )
 
         assert destination.event_set.count() == 7
+
         assert set(
             EventMapping.objects.filter(
                 group_id=destination.id,
             ).values_list('event_id', flat=True)
         ) == set(destination_event_event_ids)
+
         assert set(
             UserReport.objects.filter(
                 group_id=destination.id,
             ).values_list('event_id', flat=True)
         ) == set(destination_event_event_ids)
+
         assert set(
             GroupHash.objects.filter(
                 group_id=destination.id,
@@ -313,13 +338,25 @@ class UnmergeTestCase(TestCase):
             events.keys()[1]
         ])
 
+        assert set(
+            GroupRelease.objects.filter(
+                group_id=destination.id,
+            ).values_list('environment', flat=True)
+        ) == set([
+            u'production',
+        ])
+
         # TODO: Check first, last seen.
         assert set(GroupTagKey.objects.filter(group=destination).values_list('key', 'values_seen')) == set([
             (u'color', 3),
+            (u'environment', 1),
+            (u'sentry:release', 1),
         ])
 
         assert set(GroupTagValue.objects.filter(group=destination).values_list('key', 'value', 'times_seen')) == set([
             (u'color', u'red', 2),
             (u'color', u'green', 3),
             (u'color', u'blue', 2),
+            (u'environment', u'production', 7),
+            (u'sentry:release', u'version', 7),
         ])

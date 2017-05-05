@@ -352,10 +352,10 @@ def collect_tsdb_data(project, events):
             grouprelease = GroupRelease.objects.get(
                 group_id=event.group_id,
                 environment=environment,
-                release=Release.objects.get(
+                release_id=Release.objects.get(
                     organization_id=project.organization_id,
                     version=release,
-                ),
+                ).id,
             )
 
             frequencies[event.datetime][tsdb.models.frequent_environments_by_group][event.group_id][grouprelease.id] += 1
